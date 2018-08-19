@@ -1,0 +1,1070 @@
+---
+title: "CEL - Wells Fargo - Code"
+author: "CEL- Wells Fargo"
+date: "4/13/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+###########################################
+##           Data Preparation            ##
+###########################################
+
+# Read in the data
+library(data.table)
+library(dplyr)
+library(lubridate)
+options(tz = "America/Chicago")
+# set your working directory
+setwd("/Users/ai/Desktop/Wells Fargo/newdata/")
+
+acct <- fread("AcctFinal.txt", header = TRUE)
+act <- fread("ActivityFinal.txt", header = TRUE)
+fa <- fread("FAFinal.txt", header = TRUE)
+po <- fread("PositionFinal.txt", header = TRUE)
+
+# find those unique accounts in the position data, 447422 unique ids
+po_id <- unique(po$acct_id)
+
+# find those account_id's account information
+acct_withpo <- acct[acct$acct_id %in% po_id,]
+
+# get rid of the those accounts with "separate" MMPR code
+acct_withpo$MMPR_NUM[is.na(acct_withpo$MMPR_NUM)] <- 0
+
+# separate MMPR_NUM: 10, 11, 12, 14, 15, 18, 21, 52, 68, 81, 82, 89
+sep_mmpr <- c(10, 11, 12, 14, 15, 18, 21, 52, 68, 81, 82, 89)
+acct_withpo_noSeparate <- acct_withpo[!acct_withpo$MMPR_NUM %in% sep_mmpr,]
+
+# delete negative purchase
+neg_stck_p <- unique(act[act$stck_p_net < 0,]$acct_id)
+neg_bond_p <- unique(act[act$bond_p_net < 0,]$acct_id)
+neg_othr_p <- unique(act[act$othr_p_net < 0,]$acct_id)
+neg_efnd_p <- unique(act[act$efnd_p_net < 0,]$acct_id)
+acct_withpo_noSeparate <- acct_withpo_noSeparate[!acct_withpo_noSeparate$acct %in% neg_stck_p,]
+acct_withpo_noSeparate <- acct_withpo_noSeparate[!acct_withpo_noSeparate$acct %in% neg_bond_p,]
+acct_withpo_noSeparate <- acct_withpo_noSeparate[!acct_withpo_noSeparate$acct %in% neg_othr_p,]
+acct_withpo_noSeparate <- acct_withpo_noSeparate[!acct_withpo_noSeparate$acct %in% neg_efnd_p,]
+
+## we deal with accounts that have 37 months of data in position
+# acct_withpo_noSeparate has 37 months - 405,422 accounts in acct_withpo_noSeparate
+acct_po37 <- acct_withpo_noSeparate %>% group_by(acct_id) %>% summarise(count = sum(unique(CAL_EOM_DT) != 0))
+acct_po37_id <- acct_po37[acct_po37$count == 37,]$acct_id # 119,045 unique accounts
+
+# first merge FA then, delete cannot match FA
+library(lubridate)
+acct.new_mergefa <- merge(acct_withpo_noSeparate, fa, by = c("CAL_EOM_DT", "CAL_SOM_DT", "FA_ID", "SO_NM", "MKT_NM"), all.x = TRUE)
+
+# REP_HIRE_DT
+# convert it into as.numeric(dmy(CAL_EOM_DT) - dmy(REP_HIRE_DT))
+# using month as the unit
+# as.duration
+REP_HIRE_DT_num <- as.duration(dmy(acct.new_mergefa$CAL_EOM_DT) - dmy(acct.new_mergefa$REP_HIRE_DT)) / as.duration(months(1))
+acct.new_mergefa <- cbind(acct.new_mergefa, REP_HIRE_DT_num)
+
+# REP_INDU_ST_DT
+# convert it into as.numeric(dmy(CAL_EOM_DT) - dmy(REP_INDU_ST_DT))
+# using month as the unit
+# as.duration
+# if a rep does not have this license will be changed to zero afterwards 
+REP_INDU_ST_DT_num <- as.duration(dmy(acct.new_mergefa$CAL_EOM_DT) - dmy(acct.new_mergefa$REP_INDU_ST_DT)) / as.duration(months(1))
+acct.new_mergefa <- cbind(acct.new_mergefa, REP_INDU_ST_DT_num)
+acct.new_mergefa$REP_INDU_ST_DT_num <- sapply(acct.new_mergefa$REP_INDU_ST_DT_num, function(x) replace(x, is.na(x), 0))
+#fwrite(acct.new_mergefa, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/acct.new_mergefa.csv", row.names = FALSE)
+
+fa_assetnull_id <- unique(acct.new_mergefa[is.na(acct.new_mergefa$rev),]$acct_id)
+acct.new_mergefa_nonull <- acct.new_mergefa[!acct.new_mergefa$acct_id %in% fa_assetnull_id,]
+#fwrite(acct.new_mergefa_nonull, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/acct.new_mergefa_nonull.csv", row.names = FALSE)
+
+## 194,976 unique accounts
+acct.new_mergefa_nonull37 <- acct.new_mergefa_nonull[acct.new_mergefa_nonull$acct_id %in% acct_po37_id,]
+# transform all the NA in flow amount as 0
+acct.new_mergefa_nonull37$ACCT_EOM_FLOW_AMT[is.na(acct.new_mergefa_nonull37$ACCT_EOM_FLOW_AMT)] <- 0
+#fwrite(acct.new_mergefa_nonull37, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/acct.new_mergefa_nonull37.csv", row.names = FALSE)
+
+# sample 30k accounts from 194,976 unique accounts
+set.seed(2018)
+sample30k <- sample(194976, 30000)
+sample30k.id = unique(acct.new_mergefa_nonull37$acct_id)[sample30k] #sample 30000 active account id
+acct_sample30k <- acct.new_mergefa_nonull37[acct.new_mergefa_nonull37$acct_id %in% sample30k.id,]
+#fwrite(acct_sample30k, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/acct_sample30k.csv", row.names = FALSE)
+
+##########################################################################################
+# the rest will only deal with the sampled data
+## deal with weighted mean
+# "assets"    "rev"   "acct_cnt"  "mgd_asset_amt" "household_qty" "plan_qty"  
+# "REP_HIRE_DT_num"    "REP_INDU_ST_DT_num"
+acct_sample30k <- fread("/Users/ai/Desktop/Wells Fargo/newnewdata/acct_sample30k.csv", header = TRUE)
+
+library(dplyr)
+# assets
+acct.sample_weighted <- acct_sample30k %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_assets = weighted.mean(assets, REP_SPLIT_PCT))
+# rev
+acct.sample_weighted <- acct.sample_weighted %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_rev = weighted.mean(rev, REP_SPLIT_PCT))
+# acct_cnt
+acct.sample_weighted <- acct.sample_weighted %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_acct_cnt = weighted.mean(acct_cnt, REP_SPLIT_PCT))
+
+# mgd_asset_amt
+acct.sample_weighted <- acct.sample_weighted %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_mgd_asset_amt = weighted.mean(mgd_asset_amt, REP_SPLIT_PCT))
+
+# household_qty
+acct.sample_weighted <- acct.sample_weighted %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_household_qty = weighted.mean(household_qty, REP_SPLIT_PCT))
+
+# plan_qty
+acct.sample_weighted <- acct.sample_weighted %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_plan_qty = weighted.mean(plan_qty, REP_SPLIT_PCT))
+
+# REP_HIRE_DT_num
+acct.sample_weighted <- acct.sample_weighted %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_REP_HIRE_DT_num = weighted.mean(REP_HIRE_DT_num, REP_SPLIT_PCT))
+
+# REP_INDU_ST_DT_num
+acct.sample_weighted <- acct.sample_weighted %>%
+    group_by(acct_id, CAL_EOM_DT) %>% 
+    mutate(weighted_REP_INDU_ST_DT_num = weighted.mean(REP_INDU_ST_DT_num, REP_SPLIT_PCT))
+
+# drop FA_ID, REP_SPLIT_PCT AND INV_OBJ, then remove the duplicates
+acct.sample_weighted_delete <- subset(acct.sample_weighted, select = -c(FA_ID, 
+                                                                        INV_OBJ_CD,
+                                                                        REP_SPLIT_PCT,
+                                                                        REP_HIRE_DT,
+                                                                        REP_INDU_ST_DT,
+                                                                        assets,
+                                                                        rev, acct_cnt,
+                                                                        mgd_asset_amt,
+                                                                        household_qty,
+                                                                        plan_qty,
+                                                                        REP_HIRE_DT_num,
+                                                                        REP_INDU_ST_DT_num))
+
+acct.sample_weighted_delete <- acct.sample_weighted_delete[!duplicated(acct.sample_weighted_delete),]
+
+acct.sample_weighted_delete <- acct.sample_weighted_delete[order(acct.sample_weighted_delete$acct_id, dmy(acct.sample_weighted_delete$CAL_EOM_DT)),]
+
+#fwrite(acct.sample_weighted_delete, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/acct_sample_weighted_30k.csv", row.names = FALSE)
+
+## investment objective transformation
+sample_acct_id_inv <- subset(acct.sample_weighted, select = c(acct_id, INV_OBJ_CD))
+write.csv(sample_acct_id_inv, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/30ksample_inv.csv", row.names = FALSE)
+
+## merge position
+acct.sample_weighted_delete <- fread("/Users/ai/Desktop/Wells Fargo/newnewdata/acct_sample_weighted_30k.csv", header = TRUE)
+acct.sample_po <- merge(acct.sample_weighted_delete, po, by = c("acct_id", "CAL_EOM_DT", "CAL_SOM_DT"), all.x = TRUE)
+
+# All NAs in position will be replaced as zero
+val <- grepl("_val", names(acct.sample_po))
+cnt <- grepl("_cnt", names(acct.sample_po))
+acct.sample_po <- as.data.frame(acct.sample_po)
+acct.sample_po[val] <- lapply(acct.sample_po[val], function(x) replace(x, is.na(x), 0))
+acct.sample_po[cnt] <- lapply(acct.sample_po[cnt], function(x) replace(x, is.na(x), 0))
+
+## merge activity
+acct.sample_po_act <-  merge(acct.sample_po, act, by = c("acct_id", "CAL_EOM_DT", "CAL_SOM_DT"), all.x = TRUE)
+cnt <- grepl("_cnt", names(acct.sample_po_act))
+net <- grepl("_net", names(acct.sample_po_act))
+acct.sample_po_act[net] <- lapply(acct.sample_po_act[net], function(x) replace(x, is.na(x), 0))
+acct.sample_po_act[cnt] <- lapply(acct.sample_po_act[cnt], function(x) replace(x, is.na(x), 0))
+acct.sample_po_act <- acct.sample_po_act[order(acct.sample_po_act$acct_id, dmy(acct.sample_po_act$CAL_EOM_DT)),]
+fwrite(acct.sample_po_act, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/acct.sample_po_act.csv", row.names = FALSE)
+
+## create dummies
+# ACCT_OPEN_DT
+# convert it into as.numeric(dmy(CAL_EOM_DT) - dmy(ACCT_OPEN_DT))
+# using month as the nuit
+# as.duration(dmy(ff_acct_po_act_merge36$CAL_EOM_DT[1]) - dmy(ff_acct_po_act_merge36$BETA_ACCT_OPEN_DT[1])) / as.duration(months(1))
+library(dummies)
+library(lubridate)
+ACCT_OPEN_DT <- as.data.frame(as.duration(dmy(acct.sample_po_act$CAL_EOM_DT) - dmy(acct.sample_po_act$BETA_ACCT_OPEN_DT)) / as.duration(months(1)))
+colnames(ACCT_OPEN_DT) <- "ACCT_OPEN_DT"
+acct.sample_po_act <- cbind.data.frame(acct.sample_po_act, ACCT_OPEN_DT)
+
+## MKT_NM
+# Decide to aggregate as 5 groups:
+# MN, STL, GL, CNC, SD
+d.mkt <- dummy(acct.sample_po_act$MKT_NM, sep = "_")
+acct.sample_po_act <- cbind(acct.sample_po_act, d.mkt)
+
+# BRKG_ACCT_INST_CD ## there is incrediable null value in this!!!
+# Decide to aggregate as 4 groups:
+# I A Q J Other
+## deal with ""
+acct.sample_po_act$BRKG_ACCT_INST_CD[acct.sample_po_act$BRKG_ACCT_INST_CD == ""] <- 0
+#  0 5 b c e f g h k l o s t u v y
+library(dplyr)
+BRKG <- acct.sample_po_act$BRKG_ACCT_INST_CD
+BRKG %<>%
+    gsub("O", "Other", fixed = TRUE, .)%>%
+    gsub("0", "Other", fixed = TRUE, .)%>%
+    gsub("5", "Other", fixed = TRUE, .)%>%
+    gsub("B", "Other", fixed = TRUE, .)%>%
+    gsub("C", "Other", fixed = TRUE, .)%>% 
+    gsub("E", "Other", fixed = TRUE, .)%>%
+    gsub("F", "Other", fixed = TRUE, .)%>%
+    gsub("G", "Other", fixed = TRUE, .)%>%
+    gsub("H", "Other", fixed = TRUE, .)%>%
+    gsub("K", "Other", fixed = TRUE, .)%>%
+    gsub("L", "Other", fixed = TRUE, .)%>%
+    gsub("S", "Other", fixed = TRUE, .)%>%
+    gsub("T", "Other", fixed = TRUE, .)%>%
+    gsub("U", "Other", fixed = TRUE, .)%>%
+    gsub("V", "Other", fixed = TRUE, .)%>%
+    gsub("Y", "Other", fixed = TRUE, .)
+    
+d.BRKG <- dummy(BRKG, sep = "_")
+acct.sample_po_act <- cbind(acct.sample_po_act, d.BRKG)
+
+# Investment obj
+inv <- fread("/Users/ai/Desktop/Wells Fargo/newnewdata/newnew30k_inv.csv")
+acct.sample_po_act <- merge(acct.sample_po_act, inv, by = c("acct_id"), all.x = TRUE)
+
+# MMPR
+MMPR <- acct.sample_po_act$MMPR_NUM
+MMPR %<>%
+    gsub("0", "None", fixed = TRUE, .)%>%
+    gsub("33", "FA", fixed = TRUE, .) %>%
+    gsub("36", "FA", fixed = TRUE, .) %>%
+    gsub("38", "FA", fixed = TRUE, .) %>%
+    gsub("32", "FA", fixed = TRUE, .) %>%
+    gsub("44", "Client", fixed = TRUE, .) %>%
+    gsub("56", "Client", fixed = TRUE, .)
+    
+d.MMPR <- dummy(MMPR, sep = "_")
+acct.sample_po_act <- cbind(acct.sample_po_act, d.MMPR)
+
+# thrown away dummies and these are base case - San Diego Market, BRKG_other, MMPR_Bi_0
+acct.sample_po_act$`MKT_NM_SAN DIEGO MARKET` <- NULL
+acct.sample_po_act$BRKG_Other <- NULL
+acct.sample_po_act$MMPR_None <- NULL
+fwrite(acct.sample_po_act, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/acct.sample_po_act_dum.csv", row.names = FALSE)
+
+## merge external
+external <- fread("/Users/ai/Desktop/Wells Fargo/Data/External Variable Data/Demand_Factors w vix.csv", header = TRUE)
+external <- subset(external, select = -c(CPI_A_CH, USDX_A_CH, GSCI_A_CH, GDP_VAL, CPI_VAL))
+# change the format of date
+external$CAL_EOM_DT <- dmy(external$CAL_EOM_DT)
+external$CAL_SOM_DT <- dmy(external$CAL_SOM_DT)
+ff <- acct.sample_po_act
+ff$CAL_EOM_DT <- dmy(ff$CAL_EOM_DT)
+ff$CAL_SOM_DT <- dmy(ff$CAL_SOM_DT)
+
+ff_ext <- merge(ff, external, 
+                by = c("CAL_EOM_DT", "CAL_SOM_DT"), 
+                all.x = TRUE)
+ff_ext <- ff_ext[order(ff_ext$acct_id, ff_ext$CAL_EOM_DT),]
+fwrite(ff_ext, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/ff_ext_newnew.csv", row.names = FALSE)
+
+## merge seasonality
+# Seasonal Effect - should not be lagged - target on the predicted Y edited on Apr.11
+
+test1 <- ff_ext %>% group_by(acct_id) %>%
+    mutate(CAL_lag = lead(CAL_EOM_DT))
+test <- as.data.frame(test1$CAL_lag)
+
+month_c <- month.abb[month(test$`test1$CAL_lag`)]
+# parse the month information
+month_data <- as.data.frame(month_c)
+colnames(month_data) <- "month"
+month_data[is.na(month_data$month),] <- "Feb"
+dummy_month <- dummy(month_data$month, sep = "_pred_") # predicted period Y
+dmonth <- dummy_month[,c("month_pred_Jan", "month_pred_Feb", "month_pred_Mar", "month_pred_Apr", "month_pred_May", "month_pred_Jun", "month_pred_Jul", "month_pred_Aug", "month_pred_Sep", "month_pred_Oct", "month_pred_Nov", "month_pred_Dec")]
+ff_ext <- cbind(ff_ext, dmonth)
+fwrite(ff_ext, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/ff_new_ext_month.csv", row.names = FALSE)
+
+# lag activity for one month
+ff_ext_lagY <- ff_ext %>% group_by(acct_id) %>%
+                mutate(anty_p_net_lag = lead(anty_p_net),
+                       bond_p_net_lag = lead(bond_p_net),
+                       stck_p_net_lag = lead(stck_p_net),
+                       efnd_p_net_lag = lead(efnd_p_net),
+                       bfnd_p_net_lag = lead(bfnd_p_net),
+                       mfnd_p_net_lag = lead(mfnd_p_net),
+                       mmmf_p_net_lag = lead(mmmf_p_net),
+                       cfnd_p_net_lag = lead(cfnd_p_net),
+                       ofnd_p_net_lag = lead(ofnd_p_net),
+                       othr_p_net_lag = lead(othr_p_net),
+                       
+                       anty_s_net_lag = lead(anty_s_net),
+                       bond_s_net_lag = lead(bond_s_net),
+                       stck_s_net_lag = lead(stck_s_net),
+                       efnd_s_net_lag = lead(efnd_s_net),
+                       bfnd_s_net_lag = lead(bfnd_s_net),
+                       mfnd_s_net_lag = lead(mfnd_s_net),
+                       mmmf_s_net_lag = lead(mmmf_s_net),
+                       cfnd_s_net_lag = lead(cfnd_s_net),
+                       ofnd_s_net_lag = lead(ofnd_s_net),
+                       othr_s_net_lag = lead(othr_s_net))
+ff_ext_lagY_noNA <- ff_ext_lagY[!is.na(ff_ext_lagY$anty_p_net_lag),]
+
+# Write out data
+fwrite(ff_ext_lagY_noNA, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/ff_ext_lagY_new.csv", row.names = FALSE)
+### use this to do the conditional amount model
+
+# normalization
+# Also, normalization for 29 columns that performed the change
+ff_normal <- fread("/Users/ai/Desktop/Wells Fargo/newnewdata/ff_ext_lagY_new.csv", header = TRUE)
+ff_normal$ACCT_ASSET_AMT <- scale(ff_normal$ACCT_ASSET_AMT)
+ff_normal$ACCT_COMM_EOM_AMT <- scale(ff_normal$ACCT_COMM_EOM_AMT)
+ff_normal$ACCT_CGL_UNRLZ_AMT <- scale(ff_normal$ACCT_CGL_UNRLZ_AMT)
+ff_normal$MGN_DR_BAL_AMT <- scale(ff_normal$MGN_DR_BAL_AMT)
+ff_normal$ACCT_EOM_FLOW_AMT <- scale(ff_normal$ACCT_EOM_FLOW_AMT)
+
+ff_normal$anty_val <- scale(ff_normal$anty_val)
+ff_normal$bond_val <- scale(ff_normal$bond_val)
+ff_normal$stck_val <- scale(ff_normal$stck_val)
+ff_normal$efnd_val <- scale(ff_normal$efnd_val)
+ff_normal$bfnd_val <- scale(ff_normal$bfnd_val)
+ff_normal$mfnd_val <- scale(ff_normal$mfnd_val)
+ff_normal$mmmf_val <- scale(ff_normal$mmmf_val)
+ff_normal$cfnd_val <- scale(ff_normal$cfnd_val)
+ff_normal$ofnd_val <- scale(ff_normal$ofnd_val)
+ff_normal$othr_val <- scale(ff_normal$othr_val)
+
+ff_normal$anty_cnt <- scale(ff_normal$anty_cnt)
+ff_normal$bond_cnt <- scale(ff_normal$bond_cnt)
+ff_normal$stck_cnt <- scale(ff_normal$stck_cnt)
+ff_normal$efnd_cnt <- scale(ff_normal$efnd_cnt)
+ff_normal$bfnd_cnt <- scale(ff_normal$bfnd_cnt)
+ff_normal$mfnd_cnt <- scale(ff_normal$mfnd_cnt)
+ff_normal$mmmf_cnt <- scale(ff_normal$mmmf_cnt)
+ff_normal$cfnd_cnt <- scale(ff_normal$cfnd_cnt)
+ff_normal$ofnd_cnt <- scale(ff_normal$ofnd_cnt)
+ff_normal$othr_cnt <- scale(ff_normal$othr_cnt)
+
+ff_normal$ACCT_OPEN_DT <- scale(ff_normal$ACCT_OPEN_DT)
+
+ff_normal$weighted_assets <- scale(ff_normal$weighted_assets)
+ff_normal$weighted_rev <- scale(ff_normal$weighted_rev)
+ff_normal$weighted_acct_cnt <- scale(ff_normal$weighted_acct_cnt)
+ff_normal$weighted_mgd_asset_amt <- scale(ff_normal$weighted_mgd_asset_amt)
+ff_normal$weighted_household_qty <- scale(ff_normal$weighted_household_qty)
+ff_normal$weighted_plan_qty <- scale(ff_normal$weighted_plan_qty)
+ff_normal$weighted_REP_HIRE_DT_num <- scale(ff_normal$weighted_REP_HIRE_DT_num)
+ff_normal$weighted_REP_INDU_ST_DT_num <- scale(ff_normal$weighted_REP_INDU_ST_DT_num)
+
+ff_normal$USDX_VAL <- scale(ff_normal$USDX_VAL)
+ff_normal$IR_VAL <- scale(ff_normal$IR_VAL)
+ff_normal$SP500_VAL <- scale(ff_normal$SP500_VAL)
+ff_normal$GSCI_VAL <- scale(ff_normal$GSCI_VAL)
+ff_normal$VIX_ADJ_CL <- scale(ff_normal$VIX_ADJ_CL)
+
+fwrite(ff_normal, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/ff_normal_lagY_new.csv", row.names = FALSE)
+
+## binary transformation
+net <- grepl("net",names(ff_normal))
+ff_normal_bi <- as.data.frame(ff_normal)
+ff_normal_bi[net] <- lapply(ff_normal_bi[net], function(x) replace(x, x > 0, 1))
+ff_normal_bi[net] <- lapply(ff_normal_bi[net], function(x) replace(x, x < 0, 1))
+fwrite(ff_normal_bi, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/ff_normal_lagY37_bi.csv", row.names = FALSE)
+
+## holdout data
+holdout_new <- ff_normal_bi %>% group_by(acct_id) %>% top_n(6, wt = c(CAL_EOM_DT))
+train_data30_new <- ff_normal_bi %>% group_by(acct_id) %>% top_n(-30, wt = c(CAL_EOM_DT))
+fwrite(holdout_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/holdout/holdout6_test_new.csv", row.names = FALSE)
+fwrite(train_data30_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/holdout/data30_train_new.csv", row.names = FALSE)
+
+## interaction with FAs and holdout
+# asset amount with MMPR_FA
+# asset amount with MMPR_Client
+# asset amount with weighted_REP_INDU_ST_DT_num
+# ACCT_COMM_EOM_AMT with weighted_REP_INDU_ST_DT_num
+ff_interaction <- ff_normal_bi %>% mutate(asset_amount_MMPR_FA = ACCT_ASSET_AMT*MMPR_FA,
+                                          asset_amount_MMPR_Client = ACCT_ASSET_AMT*MMPR_Client,
+                                          asset_amount_tenure = ACCT_ASSET_AMT*weighted_REP_INDU_ST_DT_num,
+                                          commission_tenure = ACCT_COMM_EOM_AMT*weighted_REP_INDU_ST_DT_num)
+
+fwrite(ff_interaction, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/ff_interaction.csv", row.names = FALSE)
+
+holdout_int <- ff_interaction %>% group_by(acct_id) %>% top_n(6, wt = c(CAL_EOM_DT))
+train_data30_int <- ff_interaction %>% group_by(acct_id) %>% top_n(-30, wt = c(CAL_EOM_DT))
+fwrite(holdout_int, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/holdout/holdout6_test_int.csv", row.names = FALSE)
+fwrite(train_data30_int, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/holdout/data30_train_int.csv", row.names = FALSE)
+
+###########################################
+##        Logit Model Building           ##
+###########################################
+train <- fread("data30_train_new.csv",header = TRUE) 
+test <- fread("holdout6_test_new.csv",header = TRUE)
+length(unique(train$acct_id))
+length(unique(test$acct_id))
+summary(train)
+summary(test)
+names(train)==names(test)
+names(test)
+
+##*******************logistic-stck p net lag********************************
+########################
+glm.fit.stck.p = glm(stck_p_net_lag~.-1,data = train[,c(9:13,15:18,20:124,127)], family = binomial)
+# train error rate
+summary(glm.fit.stck.p)
+
+# Calculate in-sample fit for the model using train data
+## make prediction, using "type = "response"" to ask for probability
+glm.probs.stck.pt <- predict(glm.fit.stck.p,train, type = "response") 
+
+glm.pred.stck.pt <- rep(0, 900000)
+#if probability>0.5, predict 1
+glm.pred.stck.pt[glm.probs.stck.pt>0.5] <- 1
+table(glm.pred.stck.pt,train$stck_p_net_lag) #test:confusion matrix
+
+# overall accuracy
+mean(glm.pred.stck.pt == train$stck_p_net_lag)
+# recall
+table(glm.pred.stck.pt,train$stck_p_net_lag)[2,2]/(table(glm.pred.stck.pt,train$stck_p_net_lag)[2,2]+table(glm.pred.stck.pt,train$stck_p_net_lag)[1,2])
+# precision
+table(glm.pred.stck.pt,train$stck_p_net_lag)[2,2]/(table(glm.pred.stck.pt,train$stck_p_net_lag)[2,2]+table(glm.pred.stck.pt,train$stck_p_net_lag)[2,1])
+# test error rate
+glm.probs.stck.p = predict(glm.fit.stck.p,test, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+# Calculate the out-of-sample fit for the model using test data
+glm.pred.stck.p = rep(0,180000)
+glm.pred.stck.p[glm.probs.stck.p>0.5]=1# if probability > 0.5, predict 1
+
+table(glm.pred.stck.p,test$stck_p_net_lag) # test:confusion matrix
+mean(glm.pred.stck.p == test$stck_p_net_lag) # overall accuracy
+table(glm.pred.stck.p,test$stck_p_net_lag)[2,2]/(table(glm.pred.stck.p,test$stck_p_net_lag)[2,2]+table(glm.pred.stck.p,test$stck_p_net_lag)[1,2])
+table(glm.pred.stck.p,test$stck_p_net_lag)[2,2]/(table(glm.pred.stck.p,test$stck_p_net_lag)[2,2]+table(glm.pred.stck.p,test$stck_p_net_lag)[2,1])
+
+#***********stck_s**********************
+#################################
+glm.fit.stck.s = glm(stck_s_net_lag~.-1,data = train[,c(9:13,15:18,20:124,137)], family = binomial)
+summary(glm.fit.stck.s)
+
+# Calculate in-sample fit for the model using train data
+glm.probs.stck.sp = predict(glm.fit.stck.s,train, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+# test error rate
+glm.probs.stck.s = predict(glm.fit.stck.s,test, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+glm.pred.stck.s = rep(0,180000)
+
+glm.pred.stck.s[glm.probs.stck.s>0.5]=1#if probability>0.5, predict 1
+
+t <- table(glm.pred.stck.s,test$stck_s_net_lag) #test:confusion matrix
+t
+mean(glm.pred.stck.s == test$stck_s_net_lag)  ##test:overall correct rate
+t[2,2]/(t[2,2]+t[1,2])#recall
+t[2,2]/(t[2,2]+t[2,1])#precision
+
+
+#########################################################################
+# Same logic of this model building could be applied to the other products
+########################################################################
+
+##*******************logistic-efnd p net lag********************************
+#########################
+glm.fit.efnd.p = glm(efnd_p_net_lag~.-1,data = train[,c(9:13,15:18,20:124,128)], family = binomial)
+summary(glm.fit.efnd.p)
+#training error
+glm.probs.efnd.pt = predict(glm.fit.efnd.p,train, type = "response") 
+glm.pred.efnd.pt = rep(0,900000)
+glm.pred.efnd.pt[glm.probs.efnd.pt>0.5]=1#if probability>0.5, predict 1
+
+t <- table(glm.pred.efnd.pt,train$efnd_p_net_lag) #test:confusion matrix
+mean(glm.pred.efnd.pt == train$efnd_p_net_lag)
+# recall
+t[2,2]/(t[2,2]+t[1,2])
+# precision
+t[2,2]/(t[2,2]+t[2,1])
+
+#test error rate
+##make prediction, using "type = "response"" to ask for probability
+glm.probs.efnd.p = predict(glm.fit.efnd.p,test, type = "response") 
+####### test begin
+original_pre <- cbind(test, glm.probs.efnd.p)
+test_Dec <- test[month(test$CAL_EOM_DT) == 12,]
+test_Dec_ir1 <- test_Dec
+test_Dec_ir1$IR_VAL <- 1
+probs.Dec.efnd.p_ir1 <- predict(glm.fit.efnd.p,test_Dec_ir1, type = "response") 
+
+test_Dec_ir3 <- test_Dec
+test_Dec_ir3$IR_VAL <- 3
+probs.Dec.efnd.p_ir3 <- predict(glm.fit.efnd.p,test_Dec_ir3, type = "response") 
+
+test_Dec_ir5 <- test_Dec
+test_Dec_ir5$IR_VAL <- 5
+probs.Dec.efnd.p_ir5 <- predict(glm.fit.efnd.p,test_Dec_ir5, type = "response") 
+
+
+original_preDec <- original_pre[month(original_pre$CAL_EOM_DT) == 12,]
+
+probs.pred.efnd.Dec <- cbind(original_preDec, probs.Dec.efnd.p_ir1, probs.Dec.efnd.p_ir3, probs.Dec.efnd.p_ir5)
+ag <- cbind(test, glm.probs.efnd.p)
+aggregate_efnd <- ag %>% group_by(CAL_EOM_DT) %>% summarise(efnd.p = sum(glm.probs.efnd.p))
+
+aggregate.Dec <- probs.pred.efnd.Dec %>% group_by(CAL_EOM_DT) %>% summarise(
+                                                                glm.probs.efnd.p = sum(glm.probs.efnd.p),
+                                                                probs.Dec.efnd.p_ir1 = sum(probs.Dec.efnd.p_ir1),
+                                                                probs.Dec.efnd.p_ir3 = sum(probs.Dec.efnd.p_ir3),
+                                                                probs.Dec.efnd.p_ir5 = sum(probs.Dec.efnd.p_ir5))
+######test end
+glm.pred.efnd.p = rep(0,180000)
+
+glm.pred.efnd.p[glm.probs.efnd.p>0.5]=1#if probability>0.5, predict 1
+
+table(glm.pred.efnd.p,test$efnd_p_net_lag) #test:confusion matrix
+
+mean(glm.pred.efnd.p == test$efnd_p_net_lag)
+table(glm.pred.efnd.p,test$efnd_p_net_lag)[2,2]/(table(glm.pred.efnd.p,test$efnd_p_net_lag)[2,2]+table(glm.pred.efnd.p,test$efnd_p_net_lag)[1,2])#recall
+table(glm.pred.efnd.p,test$efnd_p_net_lag)[2,2]/(table(glm.pred.efnd.p,test$efnd_p_net_lag)[2,2]+table(glm.pred.efnd.p,test$efnd_p_net_lag)[2,1])#precision
+
+##******************************bfnd_p_net_lag*******************************
+####################################################
+glm.fit.bfnd.p = glm(bfnd_p_net_lag~.-1,data = train[,c(9:13,15:18,20:124,129)], family = binomial)
+summary(glm.fit.bfnd.p)
+#train prediction
+glm.probs.bfnd.pt = predict(glm.fit.bfnd.p,train, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+glm.pred.bfnd.p = rep(0,900000)
+
+glm.pred.bfnd.p[glm.probs.bfnd.p>0.5]=1#if probability>0.5, predict 1
+
+t=table(glm.pred.bfnd.p,train$bfnd_p_net_lag) #test:confusion matrix
+
+t[2,2]/(t[2,2]+t[1,2])#recall
+t[2,2]/(t[2,2]+t[2,1])
+#test error rate
+glm.probs.bfnd.p = predict(glm.fit.bfnd.p,test, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+glm.pred.bfnd.p = rep(0,180000)
+
+glm.pred.bfnd.p[glm.probs.bfnd.p>0.5]=1#if probability>0.5, predict 1
+
+table(glm.pred.bfnd.p,test$bfnd_p_net_lag) #test:confusion matrix
+
+mean(glm.pred.bfnd.p == test$bfnd_p_net_lag)  ##test:overall correct rate
+table(glm.pred.bfnd.p,test$bfnd_p_net_lag)[2,2]/(table(glm.pred.bfnd.p,test$bfnd_p_net_lag)[2,2]+table(glm.pred.bfnd.p,test$bfnd_p_net_lag)[1,2])#recall
+table(glm.pred.bfnd.p,test$bfnd_p_net_lag)[2,2]/(table(glm.pred.bfnd.p,test$bfnd_p_net_lag)[2,2]+table(glm.pred.bfnd.p,test$bfnd_p_net_lag)[2,1])#precision
+
+a=cbind(test,glm.probs.bfnd.p,glm.probs.efnd.p,glm.probs.stck.p)
+b=cbind(train,glm.probs.bfnd.pt,glm.probs.efnd.pt,glm.probs.stck.pt)
+
+
+#*************efnd_s*************************
+##logistic-efnd s net lag
+glm.fit.efnd.s = glm(efnd_s_net_lag~.-1,data = train[,c(9:13,15:18,20:124,138)], family = binomial)
+summary(glm.fit.efnd.s)
+#train prediction
+glm.probs.efnd.sp = predict(glm.fit.efnd.s,train, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+#test error rate
+glm.probs.efnd.s = predict(glm.fit.efnd.s,test, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+glm.pred.efnd.s = rep(0,180000)
+
+glm.pred.efnd.s[glm.probs.efnd.s>0.5]=1#if probability>0.5, predict 1
+
+t=table(glm.pred.efnd.s,test$efnd_s_net_lag) #test:confusion matrix
+t
+mean(glm.pred.efnd.s == test$efnd_s_net_lag)
+t[2,2]/(t[2,2]+t[1,2])#recall
+t[2,2]/(t[2,2]+t[2,1])#precision
+
+#****************bfnd_s******************
+glm.fit.bfnd.s = glm(bfnd_s_net_lag~.-1,data = train[,c(9:13,15:18,20:124,139)], family = binomial)
+summary(glm.fit.bfnd.s)
+#train prediction
+glm.probs.bfnd.sp = predict(glm.fit.bfnd.s,train, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+#test error rate
+glm.probs.bfnd.s = predict(glm.fit.bfnd.s,test, type = "response") ##make prediction, using "type = "response"" to ask for probability
+
+glm.pred.bfnd.s = rep(0,180000)
+
+glm.pred.bfnd.s[glm.probs.bfnd.s>0.5]=1#if probability>0.5, predict 1
+
+t=table(glm.pred.bfnd.s,test$bfnd_s_net_lag) #test:confusion matrix
+t
+mean(glm.pred.bfnd.s == test$bfnd_s_net_lag)  ##test:overall correct rate
+t[2,2]/(t[2,2]+t[1,2])#recall
+t[2,2]/(t[2,2]+t[2,1])#precision
+
+a=cbind(a,glm.probs.bfnd.s,glm.probs.efnd.s,glm.probs.stck.s)
+b=cbind(b,glm.probs.bfnd.sp,glm.probs.efnd.sp,glm.probs.stck.sp)
+
+c <- a %>% group_by(CAL_EOM_DT) %>% summarise(
+        bfnd_p_net_sum_prob = sum(glm.probs.bfnd.p),
+        efnd_p_net_sum_prob = sum(glm.probs.efnd.p),
+        stck_p_net_sum_prob = sum(glm.probs.stck.p),
+        bfnd_s_net_sum_prob = sum(glm.probs.bfnd.s),
+        efnd_s_net_sum_prob = sum(glm.probs.efnd.s),
+        stck_s_net_sum_prob = sum(glm.probs.stck.s)
+)
+write.csv(c,"stck_bfnd_efnd_test_prediction.csv")
+d <- b %>% group_by(CAL_EOM_DT) %>% summarise(
+        bfnd_p_net_sum_prob = sum(glm.probs.bfnd.pt),
+        efnd_p_net_sum_prob = sum(glm.probs.efnd.pt),
+        stck_p_net_sum_prob = sum(glm.probs.stck.pt),
+        bfnd_s_net_sum_prob = sum(glm.probs.bfnd.sp),
+        efnd_s_net_sum_prob = sum(glm.probs.efnd.sp),
+        stck_s_net_sum_prob = sum(glm.probs.stck.sp)
+)
+write.csv(d,"stck_bfnd_efnd_train_prediction.csv")
+
+###########################################
+##   Lasso Probability Model Building    ##
+###########################################
+library(glmnet)
+set.seed(2018)
+# only read in the columns that we need for model building
+train <- fread("data30_train_new.csv",header = TRUE) [,c(1, 9:13, 15:18, 20:144)] 
+test <- fread("holdout6_test_new.csv",header = TRUE) [,c(1, 9:13, 15:18, 20:144)]
+
+# LASSO_stck_p
+##############
+x_train_stck_p <- model.matrix(stck_p_net_lag ~. ,train[ ,c(2:115, 118)])
+y_train_stck_p <- train$stck_p_net_lag
+x_test_stck_p <- model.matrix(stck_p_net_lag ~. ,test[ ,c(2:115, 118)])
+y_test_stck_p <- test$stck_p_net_lag
+
+# First use cross validation to find the best lambda for lasso
+grid = 10^seq(10,-2, length = 100)
+cv_out <- cv.glmnet(x_train_stck_p, y_train_stck_p, alpha = 1)
+plot(cv_out)
+bestlam <- cv_out$lambda.min
+cat("Best lambda is", bestlam)
+
+# Train the lasso model
+lasso_mod_stck_p <- glmnet(x_train_stck_p, y_train_stck_p, alpha = 1, lambda = grid)
+out <- glmnet(x_train_stck_p, y_train_stck_p, alpha = 1, lambda = grid)
+lasso_coef <- predict(out, type = "coefficients", s = bestlam)[1:115,]
+plot(lasso_mod_stck_p)
+
+# Use the best lambda to plug in the lasso model and see the coefficient of the vairables
+lasso_coef_stck_p <- predict(lasso_mod_stck_p, s = bestlam, type = "coefficients")[1:115,]
+cat("Below are the variables chosen by LASSO:")
+## Below are the variables chosen by lasso:
+lasso_coef_stck_p[lasso_coef_stck_p != 0]
+
+# Use the best lambda to plug in the lasso model and see the prediction
+lasso_pred_stck_p = predict(lasso_mod_stck_p, s = bestlam, newx = x_test_stck_p)
+# Calculate the prediction accuracy of the lasso model using MSE
+cat("Mean Squared Error:", mean((lasso_pred_stck_p - y_test_stck_p)^2))
+
+# We could also see the actual comparison of the prediction and the actual value of lasso
+temp <- cbind(head(lasso_pred_stck_p, 10), head(y_test_stck_p, 10))
+colnames(temp)[1:2] <- c("Prediction","Actual")
+temp
+
+#########################################################################
+# Same logic of this model building could be applied to the other products
+########################################################################
+
+# LASSO_stck_s
+##############
+x_train_stck_s <- model.matrix(stck_s_net_lag ~. ,train[ ,c(2:115, 128)])
+y_train_stck_s <- train$stck_s_net_lag
+x_test_stck_s <- model.matrix(stck_s_net_lag ~. ,test[ ,c(2:115, 128)])
+y_test_stck_s <- test$stck_s_net_lag
+
+grid = 10^seq(10,-2,length = 100)
+cv_out <- cv.glmnet(x_train_stck_s, y_train_stck_s, alpha = 1)
+plot(cv_out)
+
+bestlam <- cv_out$lambda.min
+cat("Best lambda is", bestlam)
+
+lasso_mod_stck_s <- glmnet(x_train_stck_s, y_train_stck_s, alpha = 1, lambda = grid)
+out <- glmnet(x_train_stck_s, y_train_stck_s, alpha = 1, lambda = grid)
+
+# Use the best lambda to plug in the lasso model and see the coefficient of the vairables
+lasso_coef <- predict(out, type = "coefficients", s = bestlam)[1:115,]
+plot(lasso_mod_stck_s)
+lasso_coef_stck_s <- predict(lasso_mod_stck_s, s = bestlam, type = "coefficients")[1:115,]
+cat("Below are the variables chosen by LASSO:")
+
+# Use the best lambda to plug in the lasso model and see the prediction
+lasso_pred_stck_s = predict(lasso_mod_stck_s, s = bestlam, newx = x_test_stck_s)
+cat( "Mean Squared Error:", mean((lasso_pred_stck_s - y_test_stck_s)^2))
+
+# We could also see the actual comparison of the prediction and the actual value of lasso
+temp <- cbind(head(lasso_pred_stck_s, 10), head(y_test_stck_s, 10))
+colnames(temp)[1:2] <- c("Prediction","Actual")
+temp
+
+# LASSO_efnd_p
+##############
+x_train_efnd_p <- model.matrix(efnd_p_net_lag ~. ,train[ ,c(2:115, 119)])
+y_train_efnd_p <- train$efnd_p_net_lag
+x_test_efnd_p <- model.matrix(efnd_p_net_lag ~. ,test[ ,c(2:115, 119)])
+y_test_efnd_p <- test$efnd_p_net_lag
+
+grid = 10^seq(10,-2,length = 100)
+cv_out <- cv.glmnet(x_train_efnd_p, y_train_efnd_p, alpha = 1)
+plot(cv_out)
+
+bestlam <- cv_out$lambda.min
+cat("Best lambda is", bestlam)
+
+lasso_mod_efnd_p <- glmnet(x_train_efnd_p, y_train_efnd_p, alpha = 1, lambda = grid)
+out <- glmnet(x_train_efnd_p, y_train_efnd_p, alpha = 1, lambda = grid)
+lasso_coef <- predict(out, type = "coefficients", s = bestlam)[1:115,]
+plot(lasso_mod_efnd_p)
+
+lasso_coef_efnd_p <- predict(lasso_mod_efnd_p, s = bestlam, type = "coefficients")[1:115,]
+cat("Below are the variables chosen by LASSO:")
+## Below are the variables chosen by LASSO:
+lasso_coef_efnd_p[lasso_coef_efnd_p != 0]
+
+lasso_pred_efnd_p = predict(lasso_mod_efnd_p, s = bestlam, newx = x_test_efnd_p)
+cat("Mean Squared Error:", mean((lasso_pred_efnd_p - y_test_efnd_p)^2))
+
+temp <- cbind(head(lasso_pred_efnd_p, 10), head(y_test_efnd_p, 10))
+colnames(temp)[1:2] <- c("Prediction","Actual")
+temp
+
+# LASSO_efnd_s
+x_train_efnd_s <- model.matrix(efnd_s_net_lag ~. ,train[ ,c(2:115, 129)])
+y_train_efnd_s <- train$efnd_s_net_lag
+x_test_efnd_s <- model.matrix(efnd_s_net_lag ~. ,test[ ,c(2:115, 129)])
+y_test_efnd_s <- test$efnd_p_net_lag
+
+grid = 10^seq(10,-2,length = 100)
+cv_out <- cv.glmnet(x_train_efnd_s, y_train_efnd_s, alpha = 1)
+plot(cv_out)
+
+bestlam <- cv_out$lambda.min
+cat("Best lambda is", bestlam)
+
+lasso_mod_efnd_s <- glmnet(x_train_efnd_s, y_train_efnd_s, alpha = 1, lambda = grid)
+out <- glmnet(x_train_efnd_s, y_train_efnd_s, alpha = 1, lambda = grid)
+lasso_coef <- predict(out, type = "coefficients", s = bestlam)[1:115,]
+plot(lasso_mod_efnd_s)
+
+lasso_coef_efnd_s <- predict(lasso_mod_efnd_s, s = bestlam, type = "coefficients")[1:115,]
+cat("Below are the variables chosen by LASSO:")
+## Below are the variables chosen by LASSO:
+lasso_coef_efnd_s[lasso_coef_efnd_s != 0]
+
+lasso_pred_efnd_s = predict(lasso_mod_efnd_s, s = bestlam, newx = x_test_efnd_s)
+cat("Mean Squared Error:", mean((lasso_pred_efnd_s - y_test_efnd_s)^2))
+
+temp <- cbind(head(lasso_pred_efnd_s, 10), head(y_test_efnd_s, 10))
+colnames(temp)[1:2] <- c("Prediction","Actual")
+temp
+
+# LASSO_bfnd_p
+################
+x_train_bfnd_p <- model.matrix(bfnd_p_net_lag ~. ,train[ ,c(2:115, 120)])
+y_train_bfnd_p <- train$bfnd_p_net_lag
+x_test_bfnd_p <- model.matrix(bfnd_p_net_lag ~. ,test[ ,c(2:115, 120)])
+y_test_bfnd_p <- test$bfnd_p_net_lag
+
+grid = 10^seq(10,-2,length = 100)
+cv_out <- cv.glmnet(x_train_bfnd_p, y_train_bfnd_p, alpha = 1)
+plot(cv_out)
+
+bestlam <- cv_out$lambda.min
+cat("Best lambda is", bestlam)
+
+lasso_mod_bfnd_p <- glmnet(x_train_bfnd_p, y_train_bfnd_p, alpha = 1, lambda = grid)
+out <- glmnet(x_train_bfnd_p, y_train_bfnd_p, alpha = 1, lambda = grid)
+lasso_coef <- predict(out, type = "coefficients", s = bestlam)[1:115,]
+plot(lasso_mod_bfnd_p)
+
+lasso_coef_bfnd_p <- predict(lasso_mod_bfnd_p, s = bestlam, type = "coefficients")[1:115,]
+cat("Below are the variables chosen by LASSO:")
+## Below are the variables chosen by LASSO:
+lasso_coef_bfnd_p[lasso_coef_bfnd_p != 0]
+
+lasso_pred_bfnd_p = predict(lasso_mod_bfnd_p, s = bestlam, newx = x_test_bfnd_p)
+cat("Mean Squared Error:", mean((lasso_pred_bfnd_p - y_test_bfnd_p)^2))
+
+temp <- cbind(head(lasso_pred_bfnd_p, 10), head(y_test_bfnd_p, 10))
+colnames(temp)[1:2] <- c("Prediction","Actual")
+temp
+
+# LASSO_bfnd_s
+#############
+x_train_bfnd_s <- model.matrix(bfnd_s_net_lag ~. ,train[ ,c(2:115, 130)])
+y_train_bfnd_s <- train$bfnd_s_net_lag
+x_test_bfnd_s <- model.matrix(bfnd_s_net_lag ~. ,test[ ,c(2:115, 130)])
+y_test_bfnd_s <- test$bfnd_s_net_lag
+
+grid = 10^seq(10,-2,length = 100)
+cv_out <- cv.glmnet(x_train_bfnd_s, y_train_bfnd_s, alpha = 1)
+plot(cv_out)
+
+bestlam <- cv_out$lambda.min
+cat("Best lambda is", bestlam)
+
+lasso_mod_bfnd_s <- glmnet(x_train_bfnd_s, y_train_bfnd_s, alpha = 1, lambda = grid)
+out <- glmnet(x_train_bfnd_s, y_train_bfnd_s, alpha = 1, lambda = grid)
+lasso_coef <- predict(out, type = "coefficients", s = bestlam)[1:115,]
+plot(lasso_mod_bfnd_s)
+
+lasso_coef_bfnd_s <- predict(lasso_mod_bfnd_s, s = bestlam, type = "coefficients")[1:
+115,]
+cat("Below are the variables chosen by LASSO:")
+## Below are the variables chosen by LASSO:
+lasso_coef_bfnd_s[lasso_coef_bfnd_s != 0]
+
+lasso_pred_bfnd_s = predict(lasso_mod_bfnd_s, s = bestlam, newx = x_test_bfnd_s)
+cat("Mean Squared Error:", mean((lasso_pred_bfnd_s - y_test_bfnd_s)^2))
+
+temp <- cbind(head(lasso_pred_bfnd_s, 10), head(y_test_bfnd_s, 10))
+colnames(temp)[1:2] <- c("Prediction","Actual")
+temp
+
+###########################################
+##       Conditional Amount Model        ##
+###########################################
+
+## conditional amount data transformation
+ff_normal <- fread("/Users/ai/Desktop/Wells Fargo/newnewdata/ff_normal_lagY_new.csv", header = TRUE)
+
+# stck_p, only those who made purchase decision
+ff_stck_p_condition_new <- ff_normal[ff_normal$stck_p_net_lag != 0,]
+ff_stck_p_condition_new <- ff_stck_p_condition_new %>% group_by(acct_id) %>%
+                        mutate(stck_p_net_lag_m = stck_p_net_lag - mean(stck_p_net_lag))
+fwrite(ff_stck_p_condition_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/conditional model/ff_stck_p_condition_new.csv", row.names = FALSE)
+
+# stck_s
+ff_stck_s_condition_new <- ff_normal[ff_normal$stck_s_net_lag != 0,]
+ff_stck_s_condition_new <- ff_stck_s_condition_new %>% group_by(acct_id) %>%
+                        mutate(stck_s_net_lag_m = stck_s_net_lag - mean(stck_s_net_lag))
+fwrite(ff_stck_s_condition_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/conditional model/ff_stck_s_condition_new.csv", row.names = FALSE)
+
+# efnd_p
+ff_efnd_p_condition_new <- ff_normal[ff_normal$efnd_p_net_lag != 0,]
+ff_efnd_p_condition_new <- ff_efnd_p_condition_new %>% group_by(acct_id) %>%
+                        mutate(efnd_p_net_lag_m = efnd_p_net_lag - mean(efnd_p_net_lag))
+fwrite(ff_efnd_p_condition_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/conditional model/ff_efnd_p_condition_new.csv", row.names = FALSE)
+
+# efnd_s
+ff_efnd_s_condition_new <- ff_normal[ff_normal$efnd_s_net_lag != 0,]
+ff_efnd_s_condition_new <- ff_efnd_s_condition_new %>% group_by(acct_id) %>%
+                        mutate(efnd_s_net_lag_m = efnd_s_net_lag - mean(efnd_s_net_lag))
+fwrite(ff_efnd_s_condition_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/conditional model/ff_efnd_s_condition_new.csv", row.names = FALSE)
+
+# bfnd_p
+ff_bfnd_p_condition_new <- ff_normal[ff_normal$bfnd_p_net_lag != 0,]
+ff_bfnd_p_condition_new <- ff_bfnd_p_condition_new %>% group_by(acct_id) %>%
+                        mutate(bfnd_p_net_lag_m = bfnd_p_net_lag - mean(bfnd_p_net_lag))
+fwrite(ff_bfnd_p_condition_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/conditional model/ff_bfnd_p_condition_new.csv", row.names = FALSE)
+
+# bfnd_s
+ff_bfnd_s_condition_new <- ff_normal[ff_normal$bfnd_s_net_lag != 0,]
+ff_bfnd_s_condition_new <- ff_bfnd_s_condition_new %>% group_by(acct_id) %>%
+                        mutate(bfnd_s_net_lag_m = bfnd_s_net_lag - mean(bfnd_s_net_lag))
+fwrite(ff_bfnd_s_condition_new, file = "/Users/ai/Desktop/Wells Fargo/newnewdata/conditional model/ff_bfnd_s_condition_new.csv", row.names = FALSE)
+
+
+###########################################
+##    Conditional Model using lasso      ##
+###########################################
+
+
+## sample 80:20 as training and testing, and transform them into matrix
+## the response we are going to predict is the difference between specific purchase and mean of this account's total purchase
+
+library(glmnet)
+set.seed(2018)
+# Stck_p
+##########
+x_train <- sample_frac(ff_stck_p_condition_new, 0.8)
+y_train <- x_train$stck_p_net_lag_m
+x_test <- setdiff(ff_stck_p_condition_new, x_train)
+y_test <- x_test$stck_p_net_lag_m
+
+# choose the columns that will be put into the model, and we do not want intercept term
+x <- model.matrix(stck_p_net_lag_m ~.-1, x_train[,c(9:13, 15:124,145)])[,-1]
+x_te <- model.matrix(stck_p_net_lag_m ~.-1, x_test[,c(9:13, 15:124,145)])[,-1]
+
+# cross validation to fit the lasso
+cv.out <- cv.glmnet(x, y_train, alpha = 1)
+
+# select the min lambda as the lasso's best lambda parameter and make prediction on the test data
+lasso.stck_p <- predict(cv.out, s = "lambda.min", newx = x_te)
+colnames(lasso.stck_p) <- "lasso.stck_p_pred"
+names(lasso.stck_p) <- "lasso.stck_p_pred"
+
+# Calculating the prediction accuracy for lasso regression using MSE
+mean((lasso.stck_p_pred - y_test)^2)
+
+# Let's see the coefficient
+lasso.coef <- predict(cv.out, type="coefficients", s = "lambda.min")
+lasso.coef
+
+# add mean back to the prediction
+x_test <- x_test %>% group_by(acct_id) %>% mutate(stck_p_mean_value = mean(stck_p_net_lag))
+stck_pred_p <- cbind(as.data.frame(x_test), lasso.stck_p)
+stck_pred_p <- mutate(stck_pred_p, stck_p_value = stck_p_mean_value + lasso.stck_p_pred)
+# So the prediction will be the stck_pred_p and the true value will be the y_test
+
+#########################################################################
+# Same logic of this model building could be applied to the other products
+########################################################################
+
+# Stck_s
+##########
+x_train <- sample_frac(ff_stck_s_condition_new, 0.8)
+y_train <- x_train$stck_s_net_lag_m
+x_test <- setdiff(ff_stck_s_condition_new, x_train)
+y_test <- x_test$stck_s_net_lag_m
+
+# choose the columns that will be put into the model, and we do not want intercept term
+x <- model.matrix(stck_s_net_lag_m ~.-1, x_train[,c(9:13, 15:124,145)])[,-1]
+x_te <- model.matrix(stck_s_net_lag_m ~.-1, x_test[,c(9:13, 15:124,145)])[,-1]
+
+# cross validation to fit the lasso
+cv.out <- cv.glmnet(x, y_train, alpha = 1)
+
+# select the min lambda as the lasso's best lambda parameter and make prediction on the test data
+lasso.stck_s <- predict(cv.out, s = "lambda.min", newx = x_te)
+colnames(lasso.stck_s) <- "lasso.stck_s_pred"
+names(lasso.stck_s) <- "lasso.stck_s_pred"
+
+# Calculating the prediction accuracy for lasso regression using MSE
+mean((lasso.stck_s_pred - y_test)^2)
+
+# Let's see the coefficient
+lasso.coef <- predict(cv.out, type="coefficients", s = "lambda.min")
+lasso.coef
+
+# add mean back to the prediction
+x_test <- x_test %>% group_by(acct_id) %>% mutate(stck_s_mean_value = mean(stck_s_net_lag))
+stck_pred_s <- cbind(as.data.frame(x_test), lasso.stck_s)
+stck_pred_s <- mutate(stck_pred_s, stck_s_value = stck_s_mean_value + lasso.stck_s_pred)
+# So the prediction will be the stck_pred_s and the true value will be the y_test
+
+# efnd_p
+##########
+x_train <- sample_frac(ff_efnd_p_condition_new, 0.8)
+y_train <- x_train$efnd_p_net_lag_m
+x_test <- setdiff(ff_efnd_p_condition_new, x_train)
+y_test <- x_test$efnd_p_net_lag_m
+
+# choose the columns that will be put into the model, and we do not want intercept term
+x <- model.matrix(efnd_p_net_lag_m ~.-1, x_train[,c(9:13, 15:124,145)])[,-1]
+x_te <- model.matrix(efnd_p_net_lag_m ~.-1, x_test[,c(9:13, 15:124,145)])[,-1]
+
+# cross validation to fit the lasso
+cv.out <- cv.glmnet(x, y_train, alpha = 1)
+
+# select the min lambda as the lasso's best lambda parameter and make prediction on the test data
+lasso.efnd_p <- predict(cv.out, s = "lambda.min", newx = x_te)
+colnames(lasso.efnd_p) <- "lasso.efnd_p_pred"
+names(lasso.efnd_p) <- "lasso.efnd_p_pred"
+
+# Calculating the prediction accuracy for lasso regression using MSE
+mean((lasso.efnd_p_pred - y_test)^2)
+
+# Let's see the coefficient
+lasso.coef <- predict(cv.out, type="coefficients", s = "lambda.min")
+lasso.coef
+
+# add mean back to the prediction
+x_test <- x_test %>% group_by(acct_id) %>% mutate(efnd_p_mean_value = mean(efnd_p_net_lag))
+efnd_pred_p <- cbind(as.data.frame(x_test), lasso.efnd_p)
+efnd_pred_p <- mutate(efnd_pred_p, efnd_p_value = efnd_p_mean_value + lasso.efnd_p_pred)
+# So the prediction will be the efnd_pred_p and the true value will be the y_test
+
+# efnd_s
+##########
+x_train <- sample_frac(ff_efnd_s_condition_new, 0.8)
+y_train <- x_train$efnd_s_net_lag_m
+x_test <- setdiff(ff_efnd_s_condition_new, x_train)
+y_test <- x_test$efnd_s_net_lag_m
+
+# choose the columns that will be put into the model, and we do not want intercept term
+x <- model.matrix(efnd_s_net_lag_m ~.-1, x_train[,c(9:13, 15:124,145)])[,-1]
+x_te <- model.matrix(efnd_s_net_lag_m ~.-1, x_test[,c(9:13, 15:124,145)])[,-1]
+
+# cross validation to fit the lasso
+cv.out <- cv.glmnet(x, y_train, alpha = 1)
+
+# select the min lambda as the lasso's best lambda parameter and make prediction on the test data
+lasso.efnd_s <- predict(cv.out, s = "lambda.min", newx = x_te)
+colnames(lasso.efnd_s) <- "lasso.efnd_s_pred"
+names(lasso.efnd_s) <- "lasso.efnd_s_pred"
+
+# Calculating the prediction accuracy for lasso regression using MSE
+mean((lasso.efnd_s_pred - y_test)^2)
+
+# Let's see the coefficient
+lasso.coef <- predict(cv.out, type="coefficients", s = "lambda.min")
+lasso.coef
+
+# add mean back to the prediction
+x_test <- x_test %>% group_by(acct_id) %>% mutate(efnd_s_mean_value = mean(efnd_s_net_lag))
+efnd_pred_s <- cbind(as.data.frame(x_test), lasso.efnd_s)
+efnd_pred_s <- mutate(efnd_pred_s, efnd_s_value = efnd_s_mean_value + lasso.efnd_s_pred)
+# So the prediction will be the efnd_pred_s and the true value will be the y_test
+
+# bfnd_p
+##########
+x_train <- sample_frac(ff_bfnd_p_condition_new, 0.8)
+y_train <- x_train$bfnd_p_net_lag_m
+x_test <- setdiff(ff_bfnd_p_condition_new, x_train)
+y_test <- x_test$bfnd_p_net_lag_m
+
+# choose the columns that will be put into the model, and we do not want intercept term
+x <- model.matrix(bfnd_p_net_lag_m ~.-1, x_train[,c(9:13, 15:124,145)])[,-1]
+x_te <- model.matrix(bfnd_p_net_lag_m ~.-1, x_test[,c(9:13, 15:124,145)])[,-1]
+
+# cross validation to fit the lasso
+cv.out <- cv.glmnet(x, y_train, alpha = 1)
+
+# select the min lambda as the lasso's best lambda parameter and make prediction on the test data
+lasso.bfnd_p <- predict(cv.out, s = "lambda.min", newx = x_te)
+colnames(lasso.bfnd_p) <- "lasso.bfnd_p_pred"
+names(lasso.bfnd_p) <- "lasso.bfnd_p_pred"
+
+# Calculating the prediction accuracy for lasso regression using MSE
+mean((lasso.bfnd_p_pred - y_test)^2)
+
+# Let's see the coefficient
+lasso.coef <- predict(cv.out, type="coefficients", s = "lambda.min")
+lasso.coef
+
+# add mean back to the prediction
+x_test <- x_test %>% group_by(acct_id) %>% mutate(bfnd_p_mean_value = mean(bfnd_p_net_lag))
+bfnd_pred_p <- cbind(as.data.frame(x_test), lasso.bfnd_p)
+bfnd_pred_p <- mutate(bfnd_pred_p, bfnd_p_value = bfnd_p_mean_value + lasso.bfnd_p_pred)
+# So the prediction will be the bfnd_pred_p and the true value will be the y_test
+
+# bfnd_s
+##########
+x_train <- sample_frac(ff_bfnd_s_condition_new, 0.8)
+y_train <- x_train$bfnd_s_net_lag_m
+x_test <- setdiff(ff_bfnd_s_condition_new, x_train)
+y_test <- x_test$bfnd_s_net_lag_m
+
+# choose the columns that will be put into the model, and we do not want intercept term
+x <- model.matrix(bfnd_s_net_lag_m ~.-1, x_train[,c(9:13, 15:124,145)])[,-1]
+x_te <- model.matrix(bfnd_s_net_lag_m ~.-1, x_test[,c(9:13, 15:124,145)])[,-1]
+
+# cross validation to fit the lasso
+cv.out <- cv.glmnet(x, y_train, alpha = 1)
+
+# select the min lambda as the lasso's best lambda parameter and make prediction on the test data
+lasso.bfnd_s <- predict(cv.out, s = "lambda.min", newx = x_te)
+colnames(lasso.bfnd_s) <- "lasso.bfnd_s_pred"
+names(lasso.bfnd_s) <- "lasso.bfnd_s_pred"
+
+# Calculating the prediction accuracy for lasso regression using MSE
+mean((lasso.bfnd_s_pred - y_test)^2)
+
+# Let's see the coefficient
+lasso.coef <- predict(cv.out, type="coefficients", s = "lambda.min")
+lasso.coef
+
+# add mean back to the prediction
+x_test <- x_test %>% group_by(acct_id) %>% mutate(bfnd_s_mean_value = mean(bfnd_s_net_lag))
+bfnd_pred_s <- cbind(as.data.frame(x_test), lasso.bfnd_s)
+bfnd_pred_s <- mutate(bfnd_pred_s, bfnd_s_value = bfnd_s_mean_value + lasso.bfnd_s_pred)
+# So the prediction will be the bfnd_pred_s and the true value will be the y_test
+
+```
